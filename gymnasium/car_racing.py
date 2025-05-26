@@ -2,6 +2,7 @@ import gymnasium as gym
 import pygame
 import numpy as np
 pygame.init()
+from human_actions import register_input
 if False:
     env = gym.make("CarRacing-v3", render_mode="rgb_array", lap_complete_percent=0.95, domain_randomize=False, continuous=False)
 
@@ -26,44 +27,20 @@ restart = False
 
 a = np.array([0.0, 0.0, 0.0])
 
-def register_input():
-    global quit, restart
-    for event in pygame.event.get():
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_LEFT:
-                a[0] = -1.0
-            if event.key == pygame.K_RIGHT:
-                a[0] = +1.0
-            if event.key == pygame.K_UP:
-                a[1] = +1.0
-            if event.key == pygame.K_DOWN:
-                a[2] = +0.8  # set 1.0 for wheels to block to zero rotation
-            if event.key == pygame.K_RETURN:
-                restart = True
-            if event.key == pygame.K_ESCAPE:
-                quit = True
-
-        if event.type == pygame.KEYUP:
-            if event.key == pygame.K_LEFT:
-                a[0] = 0
-            if event.key == pygame.K_RIGHT:
-                a[0] = 0
-            if event.key == pygame.K_UP:
-                a[1] = 0
-            if event.key == pygame.K_DOWN:
-                a[2] = 0
-
-        if event.type == pygame.QUIT:
-            quit = True
-
 quit = False
 while not quit:
-    env.reset()
+    obs, _ = env.reset()
     total_reward = 0.0
     steps = 0
     restart = False
     while True:
-        register_input()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                quit = True
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                quit = True
+                
+        register_input(a)
         s, r, terminated, truncated, info = env.step(a)
         total_reward += r
         if steps % 200 == 0 or terminated or truncated:
@@ -72,5 +49,6 @@ while not quit:
         steps += 1
         if terminated or truncated or restart or quit:
             break
+        
 env.close()
 pygame.quit()
