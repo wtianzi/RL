@@ -16,10 +16,8 @@ from stable_baselines3 import A2C, DQN, SAC, TD3, PPO
 import torch as th
 import torch.nn as nn
 from gymnasium import spaces
-
 from stable_baselines3 import PPO
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-
 
 class CustomCNN(BaseFeaturesExtractor):
     """
@@ -52,8 +50,11 @@ class CustomCNN(BaseFeaturesExtractor):
     def forward(self, observations: th.Tensor) -> th.Tensor:
         return self.linear(self.cnn(observations))
 
+def train_ppo_cnn(model_path="highway_ppo/model_cnn", len_train=2e4):
+    n_cpu = 1
+    batch_size = 64
+    device = th.device("cuda" if th.cuda.is_available() else "cpu")
 
-def train(model_path="highway_ppo/model_cnn", len_train=2e4, load_model=None, name_tag=None):    
     env = get_env()
     obs, info = env.reset()
     print("Observation shape:", obs.shape)
@@ -62,38 +63,105 @@ def train(model_path="highway_ppo/model_cnn", len_train=2e4, load_model=None, na
         features_extractor_class=CustomCNN,
         features_extractor_kwargs=dict(features_dim=128),
     )
-    if load_model:
-        model = PPO.load(load_model, env=env)
+    if os.path.exists(model_path):
+        model = PPO.load(model_path, env=env, device=device)
     else:
         model = PPO(
             "CnnPolicy", 
             env, 
             policy_kwargs=policy_kwargs, 
             verbose=1,
-            tensorboard_log="highway_ppo_cnn/",)
+            batch_size=batch_size,
+            tensorboard_log="highway_ppo_cnn/",
+            device=device, )
         
-    model.learn(len_train)
+    model.learn(int(len_train))
     model.save(model_path)
     env.close()
 
-def get_env():
-    config = {
-        "observation": {
-            "type": "GrayscaleObservation",
-            "observation_shape": (128, 64),
-            "stack_size": 4,
-            "weights": [0.2989, 0.5870, 0.1140],  # weights for RGB conversion
-            "scaling": 1.75,
-            "duration": 100,
-        },
-        "policy_frequency": 2
-    }
-    env = gym.make('highway-v0', config=config, render_mode="rgb_array")
+def train_ppo(model_path="highway_ppo/model", len_train=2e4):
+    n_cpu = 1
+    batch_size = 64
+    #device = th.device("cuda" if th.cuda.is_available() else "cpu")
+    device = "cpu"
+    env = get_env(observation_mode="others")
+    if os.path.exists(model_path):
+        model = PPO.load(model_path, env=env, device=device,)
+    else:
+        model = PPO(
+            "MlpPolicy",
+            env,
+            policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
+            n_steps=batch_size * 12 // n_cpu,
+            batch_size=batch_size,
+            n_epochs=10,
+            learning_rate=5e-4,
+            gamma=0.8,
+            verbose=1,
+            tensorboard_log="highway_ppo/",
+            device=device,
+        )
+    # Train the agent
+    model.learn(total_timesteps=int(len_train)) # 2e4
+    # Save the agent
+    model.save(model_path)
+
+def get_env(observation_mode="GrayscaleObservation"):
+    if observation_mode == "GrayscaleObservation":
+        config = {
+            "observation": {
+                "type": "GrayscaleObservation",
+                "observation_shape": (128, 64),
+                "stack_size": 4,
+                "weights": [0.2989, 0.5870, 0.1140],  # weights for RGB conversion
+                "scaling": 1.75,
+                "duration": 100,
+            },
+            "policy_frequency": 2
+        }
+        env = gym.make('highway-v0', config=config, render_mode="rgb_array")
+    else:
+        # config = {
+        #     "observation": {
+        #         "type": "Kinematics",
+        #         "vehicles_count": 10,
+        #         "features": ["presence", "x", "y", "vx", "vy", "cos_h", "sin_h"],
+        #         "features_range": {
+        #             "x": [-100, 100],
+        #             "y": [-100, 100],
+        #             "vx": [-20, 20],
+        #             "vy": [-20, 20]
+        #         },
+        #         "absolute": False,
+        #         "order": "sorted",
+        #         "duration": 100,
+        #     }
+        # }
+        # env = gym.make('highway-v0', config=config, render_mode="rgb_array")
+        # option 2
+        env = gym.make('highway-v0', render_mode="rgb_array")
+        env.unwrapped.config["duration"]= 100
+
+        #option 3
+        # env = make_vec_env(
+        #     "highway-v0",
+        #     n_envs=1,
+        #     env_kwargs={
+        #         "config": {
+        #             "duration": 100  # customize the episode length here
+        #         }
+        #     }
+        # )
     return env
 
-def record_race(model_path="highway_ppo/model_cnn", eva_episodes=5, name_tag=""):
-    env = get_env()
-    model = PPO.load(model_path, env=env) 
+def record_race(model_path="highway_ppo/model_cnn", policy_type="ppo_cnn", eva_episodes=5, name_tag=""):
+    if policy_type == "ppo_cnn":
+        env = get_env(observation_mode="GrayscaleObservation")
+    else:
+        env = get_env(observation_mode="Kinematics")
+
+    device = th.device("cuda" if th.cuda.is_available() else "cpu")
+    model = PPO.load(model_path, env=env,) 
     (obs, info), done = env.reset(), False
     env.unwrapped.config["duration"]= 100
     # Run episode
@@ -122,7 +190,7 @@ def record_race(model_path="highway_ppo/model_cnn", eva_episodes=5, name_tag="")
                 print("early stop")
                 early_stop_tag = "f"
                 break
-        imageio.mimsave(f'videos/cnn_{name_tag}_{early_stop_tag}_{total_reward:.2f}.mp4', frames, fps=10)
+        imageio.mimsave(f'videos/{name_tag}_{early_stop_tag}_{total_reward:.2f}.mp4', frames, fps=10)
         frames = []
         res["rewards"].append(total_reward)
         res["steps"].append(step)
@@ -130,15 +198,24 @@ def record_race(model_path="highway_ppo/model_cnn", eva_episodes=5, name_tag="")
     env.close()
     return res
 
-def multi_run(model_path="highway_ppo/model_cnn", num_episodes=5, train_mode=True, name_tag=""):
-    
+def multi_run(model_path="highway_ppo/model_cnn", policy_type="ppo_cnn", num_episodes=5, train=True):    
     rewards = []
     for i in range(num_episodes):
-        if train_mode:
-            train(model_path=model_path, name_tag=name_tag)
-        reward = record_race(model_path=model_path, name_tag=name_tag)
+        print(f"Running episode {i+1}/{num_episodes} for policy type: {policy_type}")
+        if train:
+            if policy_type=="ppo_cnn":
+                train_ppo_cnn(model_path=model_path)
+            else:
+                train_ppo(model_path=model_path)
+
+        reward = record_race(model_path=model_path, 
+                             policy_type=policy_type, 
+                             name_tag=f'{policy_type}_{datetime.now().strftime("%H_%M_%S")}')
         rewards.append(reward)
-    
+
+    show_results(rewards, name_tag=f'{policy_type}_{datetime.now().strftime("%H_%M_%S")}')
+
+def show_results(rewards, name_tag="ppo_cnn"):    
     # visualization 
     import matplotlib.pyplot as plt
     import numpy as np
@@ -165,11 +242,19 @@ def multi_run(model_path="highway_ppo/model_cnn", num_episodes=5, train_mode=Tru
 
     # Save the plot
     plt.savefig(f'videos/training_metrics_{name_tag}.png', dpi=300)
-    plt.show()
-
+    #plt.show()
 
 if __name__ == "__main__":
-    model_path="highway_ppo/model_cnn"
-    #record_race(model_path=model_path)
-    name_tag = datetime.now().strftime("%H_%M_%S")
-    multi_run(model_path="highway_ppo/model_cnn", num_episodes=5, train_mode=True, name_tag=name_tag)
+    if True:
+        model_path="highway_ppo/model_100"
+        policy_type="ppo"
+        multi_run(model_path=model_path, policy_type=policy_type, num_episodes=5, train=True)
+    if True:
+        model_path="highway_ppo/model_cnn"
+        policy_type="ppo_cnn"
+        multi_run(model_path=model_path, policy_type=policy_type, num_episodes=5, train=True)
+    
+
+    # model_path="highway_ppo/model_100"
+    # train_ppo(model_path=model_path)
+    # record_race_ppo(model_path=model_path)
